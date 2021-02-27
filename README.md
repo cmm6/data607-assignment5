@@ -1,2 +1,5 @@
-# data607-assignment5
-Files and code for the Week 5 Assignment in Data 607
+# Assignment 5
+## Data 607
+### Claire Meyer
+
+This repository contains a CSV file, and the code to tidy and transform the data therein.
