@@ -1,0 +1,151 @@
+---
+title: "Data 607 Assignment 5"
+author: "Claire Meyer"
+date: "3/4/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+This document intakes a CSV (or Google Sheet results) of flights from two airlines, and transforms and tidies this data in a few ways: both a wide and a long dataset, then creating relational data for a final dataset. From there, we can analyze the flight data and come to conclusions about the two airlines delays. 
+
+## Load the data
+
+First we'll load our needed libarires and import the data. The data can be imported from a CSV hosted on Github, or directly from the Google Sheet where I placed it.
+
+```{r libs, message=FALSE}
+library(tidyverse)
+library(devtools)
+library(RCurl)
+library(googlesheets4)
+```
+
+```{r get-data}
+x <- getURL("http://raw.githubusercontent.com/cmm6/data607-assignment5/main/assignment_5_flights_data.csv",.opts=curlOptions(followlocation = TRUE)) 
+sheet <- read.csv(text = x, header=TRUE)
+
+# Imports results into a dataframe
+#gs4_deauth()
+#sheet <- read_sheet("https://docs.google.com/spreadsheets/d/11XxSTVX3uLyZDn0HNNPG0l7nRRkcR8DOSLkKCu40zTo/edit?usp=sharing") 
+```
+
+## Wide Data Structure
+
+First, let's clean up the data to configure it more cleanly in its' *wide* state. The sheet has missing rows and values.
+
+```{r structured-sheet}
+# Remove filler row
+flights_wide <- sheet %>%
+  filter(!is.na(`Los.Angeles`))
+# filter(!is.na(`Los Angeles`)) # no need for dot if using Google Sheets
+
+# Update column names to fill in missing names and clean up others.
+colnames(flights_wide) <- c('airline','timing','LAX','PHX','SAN','SFO','SEA')
+
+# Fill in missing Airline values
+flights_wide$airline[2] <- 'ALASKA'
+flights_wide$airline[4] <- 'AM WEST'
+```
+
+## Long Data Structure
+
+Then, let's use Pivot functionality to adjust the data shape to something longer.
+
+```{r long-data}
+# Use pivot_longer to adjust data shape
+flights_long <- flights_wide %>% 
+  pivot_longer(c(`LAX`,`PHX`,`SAN`,`SFO`,`SEA`), names_to = "destination", values_to = "num_flights")
+```
+
+## Relational Data
+
+For ease of comparison, we could reconfigure this data to have two columns: delayed flights and on time flights. From there we can look at delay rate and explore patterns. To create this, We'll filter the dataset by the values in the 'timing' column of the *long* dataset, creating two separate dataframes of on time and delayed data. 
+
+We can use the relational nature of this data to re-join the tables into a set with a column for each type of flight. This is perhaps not as 'tidy' as the long dataset, but simplifies further analysis.
+
+```{r relational-data}
+# Dataframe of delayed flights
+flights_delayed <- flights_long %>%
+  filter(timing == 'delayed') %>%
+  select(airline,destination,num_flights)
+
+# Renaming for clarity post-join 
+colnames(flights_delayed)[colnames(flights_delayed) == 'num_flights'] <- 'delayed_flights'
+
+# Dataframe of on-time flights
+flights_ot <- flights_long %>%
+  filter(timing == 'on time') %>%
+  select(airline,destination,num_flights)
+
+# Renaming for clarity post-join 
+colnames(flights_ot)[colnames(flights_ot) == 'num_flights'] <- "ot_flights"
+
+# Join to have a dataframe with both an on time column and delayed column
+flights_joined <- flights_ot %>%
+  left_join(flights_delayed, by = c('airline','destination'))
+```
+
+
+## Analysis
+
+With these newly transformed data sets, we can more easily analyze the relative performance of these airlines, starting with the question of how may of their flights are delayed? 
+
+```{r delay-comparisons}
+flights_joined <- flights_joined %>%
+  mutate(delay_rate = delayed_flights/ot_flights, total_flights = delayed_flights + ot_flights)
+
+by_airline <- group_by(flights_joined, airline)
+airline_delays <- summarise(by_airline, delay_rate = sprintf("%.1f %%",sum(delayed_flights)/sum(ot_flights)*100))
+
+(airline_delays)
+```
+
+We see Alaska has a higher delay rate of *15.3%*, compared to AM West's *12.2%*. 
+
+But is it possible there are other drivers in play? Namely, do the airports themselves lend themselves to delays? Do the airlines have comparable distributions of total flights across the different airports? Or is it possible that Alaska has more flights from destinations with higher delays. We can dig into this question, too, in our dataset: 
+
+```{r dest}
+by_destination <- group_by(flights_joined,destination)
+destination_delays <- summarise(by_destination, delay_rate = sprintf("%.1f %%",sum(delayed_flights)/sum(ot_flights)*100))
+(destination_delays)
+```
+
+We can see quickly that there are different delay rates for the different destinations. Phoenix sees much lower delay rates at *8.4%*, while SFO sees up to *28.1%*. (Having flown in and out of SFO many times for work, this tracks! The fog around the airport presents a visibility challenge!)
+
+Let's look at how many flights each of these airlines are flying to these destinations:
+
+```{r airline-dist}
+# Number of flights by Departure Airport
+# Leveraged this code to help build bar plot: https://stackoverflow.com/questions/22305023/how-to-get-a-barplot-with-several-variables-side-by-side-grouped-by-a-factor
+flight_dist_plot <- flights_joined %>% 
+  ggplot(aes(x=destination,y=total_flights,fill=factor(airline)))+
+  geom_bar(stat="identity",position="dodge")+
+  scale_fill_discrete(name="airline",
+                      labels=c("ALASKA", "AM WEST"))+
+  xlab("Airport")+ylab("Number of Flights")
+
+flight_dist_plot
+```
+Lo and behold, AM West sees the overwhelming majority of their flights leave Phoenix, while Alaska sees the majority leave SEA, and a higher volume at SFO. While SFO is the highest delay rate, SEA's delay rate is more than twice PHX's. 
+
+Let's compare the delay rates within this airports for each airline, though, to confirm it's not AM West's consistently on time flights driving down the PHX delay rate, for example: 
+
+```{r airline-airport}
+# Number of flights by Departure Airport
+flight_delay_plot <- flights_joined %>% 
+  ggplot(aes(x=destination,y=delay_rate,fill=factor(airline)))+
+  geom_bar(stat="identity",position="dodge")+
+  scale_fill_discrete(name="airline",
+                      labels=c("ALASKA", "AM WEST"))+
+  xlab("Airport")+ylab("Delay Rate")
+
+flight_delay_plot
+```
+In fact we do see higher delay rates at each airport for AM West, so their overall lower delay rate is due to the high volume of flights through Phoenix. This is a great example of a dataset where high level summaries could totally misguide a consumer. While AM West sees lower overall delay, it's clear that Alaska more typically gets customers going on time.
+
